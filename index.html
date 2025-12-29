@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Herramienta Educativa Geometría AI</title>
+    
+    <!-- Importar MediaPipe Pose y utilidades -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <style>
+        body {
+            background-color: #0f172a; /* Slate 900 */
+            color: white;
+            font-family: 'Segoe UI', sans-serif;
+            overflow: hidden;
+            margin: 0;
+        }
+        
+        .container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .input_video { display: none; }
+
+        .output_canvas {
+            max-width: 100%;
+            max-height: 100%;
+            border-radius: 8px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+        }
+
+        /* Panel flotante de información */
+        .hud-panel {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(30, 41, 59, 0.9); /* Slate 800 */
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(8px);
+            padding: 20px;
+            border-radius: 16px;
+            width: 250px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        .angle-value {
+            font-size: 3.5rem;
+            font-weight: 800;
+            line-height: 1;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .angle-type {
+            font-size: 1.5rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-top: 5px;
+        }
+
+        .loading {
+            position: fixed;
+            inset: 0;
+            background: #0f172a;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 50;
+            transition: opacity 0.5s;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Pantalla de Carga -->
+    <div id="loading" class="loading">
+        <div class="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+        <p class="mt-4 text-blue-200">Cargando Laboratorio de Geometría...</p>
+    </div>
+
+    <!-- Contenedor Principal -->
+    <div class="container">
+        <video class="input_video"></video>
+        <canvas class="output_canvas"></canvas>
+
+        <!-- HUD: Panel de Datos -->
+        <div class="hud-panel">
+            <h2 class="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">Análisis en Tiempo Real</h2>
+            <div id="dynamic-color-box">
+                <div class="angle-value" id="angle-text">--°</div>
+                <div class="angle-type" id="type-text">Esperando...</div>
+            </div>
+            
+            <div class="mt-6 space-y-2 text-xs text-slate-400 border-t border-slate-700 pt-3">
+                <div class="flex items-center">
+                    <span class="w-3 h-3 rounded-full bg-green-500 mr-2"></span> Agudo (&lt; 90°)
+                </div>
+                <div class="flex items-center">
+                    <span class="w-3 h-3 rounded-full bg-yellow-400 mr-2"></span> Recto (~ 90°)
+                </div>
+                <div class="flex items-center">
+                    <span class="w-3 h-3 rounded-full bg-red-500 mr-2"></span> Obtuso (&gt; 90°)
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- Referencias DOM ---
+        const videoElement = document.getElementsByClassName('input_video')[0];
+        const canvasElement = document.getElementsByClassName('output_canvas')[0];
+        const ctx = canvasElement.getContext('2d');
+        const loadingScreen = document.getElementById('loading');
+        
+        const angleText = document.getElementById('angle-text');
+        const typeText = document.getElementById('type-text');
+        const dynamicBox = document.getElementById('dynamic-color-box');
+
+        // --- Lógica Geométrica ---
+        function calculateAngle(a, b, c) {
+            // Calcula el ángulo en el punto B dado los puntos A, B, C
+            // Math.atan2(y, x) devuelve radianes
+            const radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+            let angle = Math.abs(radians * 180.0 / Math.PI);
+            
+            if (angle > 180.0) {
+                angle = 360 - angle;
+            }
+            return angle;
+        }
+
+        function getAngleCategory(angle) {
+            // Tolerancia para ángulo recto (85-95 grados)
+            if (angle < 85) return { type: 'AGUDO', color: '#4ade80', textClass: 'text-green-400' }; // Green
+            if (angle >= 85 && angle <= 95) return { type: 'RECTO', color: '#facc15', textClass: 'text-yellow-400' }; // Yellow
+            return { type: 'OBTUSO', color: '#f87171', textClass: 'text-red-400' }; // Red
+        }
+
+        // --- Dibujado en Canvas ---
+        function onResults(results) {
+            // Ocultar carga
+            if (loadingScreen.style.display !== 'none') {
+                loadingScreen.style.opacity = '0';
+                setTimeout(() => loadingScreen.style.display = 'none', 500);
+            }
+
+            // Ajustar tamaño
+            canvasElement.width = videoElement.videoWidth;
+            canvasElement.height = videoElement.videoHeight;
+
+            // Limpiar
+            ctx.save();
+            ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // Dibujar imagen espejo (opcional, pero se siente más natural)
+            ctx.translate(canvasElement.width, 0);
+            ctx.scale(-1, 1);
+            ctx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.poseLandmarks) {
+                const landmarks = results.poseLandmarks;
+                
+                // Landmarks del brazo DERECHO (Indices: 12=Hombro, 14=Codo, 16=Muñeca)
+                const shoulder = landmarks[12];
+                const elbow = landmarks[14];
+                const wrist = landmarks[16];
+
+                // Verificar visibilidad (threshold 0.5)
+                if (shoulder.visibility > 0.5 && elbow.visibility > 0.5 && wrist.visibility > 0.5) {
+                    
+                    // 1. Calcular Datos
+                    const angle = calculateAngle(shoulder, elbow, wrist);
+                    const category = getAngleCategory(angle);
+
+                    // 2. Actualizar Interfaz HTML (HUD)
+                    // Invertimos la actualización del DOM para no hacerlo 30 veces por segundo si no cambia mucho,
+                    // pero para simplicidad lo hacemos directo.
+                    angleText.innerText = Math.round(angle) + "°";
+                    typeText.innerText = category.type;
+                    
+                    angleText.style.color = category.color;
+                    typeText.style.color = category.color;
+
+                    // 3. Dibujar Geometría en Canvas
+                    const w = canvasElement.width;
+                    const h = canvasElement.height;
+
+                    // Coordenadas en pixeles
+                    const sX = shoulder.x * w; const sY = shoulder.y * h;
+                    const eX = elbow.x * w;    const eY = elbow.y * h;
+                    const wX = wrist.x * w;    const wY = wrist.y * h;
+
+                    // Líneas conectoras (Gruesas y del color del ángulo)
+                    ctx.beginPath();
+                    ctx.moveTo(sX, sY);
+                    ctx.lineTo(eX, eY);
+                    ctx.lineTo(wX, wY);
+                    ctx.lineWidth = 12;
+                    ctx.strokeStyle = category.color; // Color dinámico según el ángulo
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+                    ctx.stroke();
+
+                    // Línea blanca interior (para efecto visual de "tubo")
+                    ctx.lineWidth = 4;
+                    ctx.strokeStyle = '#ffffff';
+                    ctx.stroke();
+
+                    // Puntos (Círculos)
+                    drawPoint(ctx, sX, sY, '#ffffff');
+                    drawPoint(ctx, wX, wY, '#ffffff');
+                    
+                    // Codo (Punto central más grande)
+                    ctx.beginPath();
+                    ctx.arc(eX, eY, 15, 0, 2 * Math.PI);
+                    ctx.fillStyle = category.color;
+                    ctx.fill();
+                    ctx.lineWidth = 3;
+                    ctx.strokeStyle = '#fff';
+                    ctx.stroke();
+
+                    // 4. Dibujar Arco del Ángulo (Visualización de transportador)
+                    drawAngleArc(ctx, eX, eY, sX, sY, wX, wY, 40, category.color);
+
+                    // 5. Texto flotante en el codo (En el canvas, espejo)
+                    // Como el canvas está en espejo (scale -1, 1), el texto saldría al revés.
+                    // Restauramos el estado para dibujar texto correctamente sobre el punto.
+                    ctx.restore(); 
+                    ctx.save();
+                    
+                    // Coordenadas reales en pantalla (sin espejo) para el texto
+                    const realEX = w - eX; // Invertir X
+                    
+                    ctx.font = "bold 24px Arial";
+                    ctx.fillStyle = "white";
+                    ctx.shadowColor="black";
+                    ctx.shadowBlur=4;
+                    ctx.fillText(Math.round(angle) + "°", realEX + 20, eY - 20);
+                }
+            }
+            ctx.restore();
+        }
+
+        // --- Utilerías de Dibujo ---
+        function drawPoint(ctx, x, y, color) {
+            ctx.beginPath();
+            ctx.arc(x, y, 8, 0, 2 * Math.PI);
+            ctx.fillStyle = color;
+            ctx.fill();
+        }
+
+        function drawAngleArc(ctx, cx, cy, ax, ay, bx, by, radius, color) {
+            // Calcular ángulos iniciales de las líneas
+            const startAngle = Math.atan2(ay - cy, ax - cx);
+            const endAngle = Math.atan2(by - cy, bx - cx);
+
+            ctx.beginPath();
+            // Dibujar arco entre las dos líneas
+            // Usamos lógica simple: dibujamos el arco más corto
+            ctx.arc(cx, cy, radius, startAngle, endAngle, false); 
+            // Nota: En casos complejos 3D esto puede fallar visualmente, 
+            // pero para 2D funciona bien si los vectores están ordenados.
+            
+            ctx.strokeStyle = color; // Relleno semi-transparente
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            
+            ctx.fillStyle = color + "44"; // Hex con alpha
+            ctx.lineTo(cx, cy);
+            ctx.fill();
+        }
+
+        // --- Inicialización MediaPipe ---
+        const pose = new Pose({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+        }});
+
+        pose.setOptions({
+            modelComplexity: 1,
+            smoothLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        pose.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await pose.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720
+        });
+
+        camera.start();
+    </script>
+</body>
+</html>
